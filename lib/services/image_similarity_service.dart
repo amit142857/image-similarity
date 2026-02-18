@@ -4,7 +4,23 @@ import 'dart:typed_data';
 import 'package:image/image.dart' as img;
 import 'package:tflite_flutter/tflite_flutter.dart';
 
-/// Service that uses a TFLite model (from tflite_flutter package) to compare two images
+/// A pair of image indices and their similarity score (0–1).
+class SimilarPair {
+  const SimilarPair({required this.indexA, required this.indexB, required this.score});
+  final int indexA;
+  final int indexB;
+  final double score;
+}
+
+/// Result of finding similar images: pairs above threshold and groups (connected components).
+class SimilarImagesResult {
+  const SimilarImagesResult({required this.pairs, required this.groups});
+  final List<SimilarPair> pairs;
+  /// Each group is a list of image indices that are similar to each other.
+  final List<List<int>> groups;
+}
+
+/// Service that uses a TFLite model (from tflite_flutter package) to compare images
 /// and compute similarity (cosine similarity of feature/classification vectors).
 class ImageSimilarityService {
   Interpreter? _interpreter;
@@ -142,12 +158,58 @@ class ImageSimilarityService {
 
   /// Compares two images and returns a similarity score in [0, 1].
   /// 1.0 means very similar, 0.0 means very different.
-  /// [image1Bytes] and [image2Bytes] are raw image bytes (e.g. from image_picker).
   double getSimilarity(Uint8List image1Bytes, Uint8List image2Bytes) {
     final emb1 = _getEmbedding(image1Bytes);
     final emb2 = _getEmbedding(image2Bytes);
     final cos = _cosineSimilarity(emb1, emb2);
-    // Map [-1, 1] to [0, 1] so "more similar" is higher.
     return (cos + 1) / 2;
+  }
+
+  /// Finds similar images among [images]. Returns pairs with score >= [threshold]
+  /// and groups (connected components of similar images).
+  /// [threshold] is in [0, 1]; default 0.95 (95%).
+  SimilarImagesResult findSimilarImages(
+    List<Uint8List> images, {
+    double threshold = 0.95,
+  }) {
+    if (images.length < 2) {
+      return const SimilarImagesResult(pairs: [], groups: []);
+    }
+    final embeddings = <int, List<double>>{};
+    for (var i = 0; i < images.length; i++) {
+      embeddings[i] = _getEmbedding(images[i]);
+    }
+    final pairs = <SimilarPair>[];
+    for (var i = 0; i < images.length; i++) {
+      for (var j = i + 1; j < images.length; j++) {
+        final cos = _cosineSimilarity(embeddings[i]!, embeddings[j]!);
+        final score = (cos + 1) / 2;
+        if (score >= threshold) {
+          pairs.add(SimilarPair(indexA: i, indexB: j, score: score));
+        }
+      }
+    }
+    final groups = _buildGroups(images.length, pairs);
+    return SimilarImagesResult(pairs: pairs, groups: groups);
+  }
+
+  /// Builds groups (connected components) from similar pairs using union-find.
+  static List<List<int>> _buildGroups(int n, List<SimilarPair> pairs) {
+    final parent = List<int>.generate(n, (i) => i);
+    int find(int x) {
+      if (parent[x] != x) parent[x] = find(parent[x]);
+      return parent[x];
+    }
+    void union(int a, int b) {
+      parent[find(a)] = find(b);
+    }
+    for (final p in pairs) {
+      union(p.indexA, p.indexB);
+    }
+    final map = <int, List<int>>{};
+    for (var i = 0; i < n; i++) {
+      map.putIfAbsent(find(i), () => []).add(i);
+    }
+    return map.values.where((g) => g.length > 1).toList();
   }
 }

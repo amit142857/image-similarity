@@ -36,12 +36,11 @@ class _ImageSimilarityPageState extends State<ImageSimilarityPage> {
   final ImageSimilarityService _similarityService = ImageSimilarityService();
   final ImagePicker _picker = ImagePicker();
 
-  Uint8List? _image1;
-  Uint8List? _image2;
+  final List<Uint8List> _images = [];
   bool _modelLoading = true;
   String? _modelError;
   bool _comparing = false;
-  double? _similarityScore;
+  SimilarImagesResult? _similarResult;
   String? _compareError;
 
   @override
@@ -75,26 +74,28 @@ class _ImageSimilarityPageState extends State<ImageSimilarityPage> {
     super.dispose();
   }
 
-  Future<void> _pickImage(bool isFirst) async {
+  Future<void> _addImage() async {
     final XFile? file = await _picker.pickImage(source: ImageSource.gallery);
     if (file == null || !mounted) return;
     final bytes = await file.readAsBytes();
     setState(() {
-      if (isFirst) {
-        _image1 = bytes;
-      } else {
-        _image2 = bytes;
-      }
-      _similarityScore = null;
+      _images.add(bytes);
+      _similarResult = null;
       _compareError = null;
     });
   }
 
-  Future<void> _compare() async {
-    if (_image1 == null || _image2 == null) {
-      setState(() {
-        _compareError = 'Pick both images first';
-      });
+  void _removeImage(int index) {
+    setState(() {
+      _images.removeAt(index);
+      _similarResult = null;
+      _compareError = null;
+    });
+  }
+
+  Future<void> _findSimilar() async {
+    if (_images.length < 2) {
+      setState(() => _compareError = 'Add at least 2 images to find similar ones.');
       return;
     }
     if (!_similarityService.isLoaded) {
@@ -104,17 +105,18 @@ class _ImageSimilarityPageState extends State<ImageSimilarityPage> {
     setState(() {
       _comparing = true;
       _compareError = null;
-      _similarityScore = null;
+      _similarResult = null;
     });
-    // Yield so the loading UI can paint before we run heavy inference.
     await Future.delayed(Duration.zero);
     if (!mounted) return;
     try {
-      final score = await Future(() => _similarityService.getSimilarity(_image1!, _image2!));
+      final result = await Future(
+        () => _similarityService.findSimilarImages(_images, threshold: 0.95),
+      );
       if (mounted) {
         setState(() {
           _comparing = false;
-          _similarityScore = score;
+          _similarResult = result;
         });
       }
     } catch (e) {
@@ -165,83 +167,72 @@ class _ImageSimilarityPageState extends State<ImageSimilarityPage> {
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
                           const Text(
-                            'Pick two images to compare using a TFLite embedding model.',
+                            'Add images, then tap "Find similar" to see which ones are similar.',
                             style: TextStyle(fontSize: 14),
                           ),
+                          const SizedBox(height: 16),
+                          LayoutBuilder(
+                            builder: (context, constraints) {
+                              const crossAxisCount = 2;
+                              const spacing = 12.0;
+                              final size = (constraints.maxWidth - spacing * (crossAxisCount - 1)) / crossAxisCount;
+                              return Wrap(
+                                spacing: spacing,
+                                runSpacing: spacing,
+                                children: [
+                                  ...List.generate(_images.length, (i) {
+                                    return SizedBox(
+                                      width: size,
+                                      height: size,
+                                      child: _ImageSlot(
+                                        bytes: _images[i],
+                                        label: '${i + 1}',
+                                        onTap: () {},
+                                        onRemove: () => _removeImage(i),
+                                        showRemove: true,
+                                      ),
+                                    );
+                                  }),
+                                  SizedBox(
+                                    width: size,
+                                    height: size,
+                                    child: _ImageSlot(
+                                      bytes: null,
+                                      label: '+',
+                                      onTap: _addImage,
+                                      showRemove: false,
+                                    ),
+                                  ),
+                                ],
+                              );
+                            },
+                          ),
                           const SizedBox(height: 24),
-                          Row(
-                        children: [
-                          Expanded(
-                            child: _ImageSlot(
-                              bytes: _image1,
-                              label: 'Image 1',
-                              onTap: () => _pickImage(true),
-                            ),
+                          FilledButton.icon(
+                            onPressed: _comparing ? null : _findSimilar,
+                            icon: _comparing
+                                ? const SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(strokeWidth: 2),
+                                  )
+                                : const Icon(Icons.compare),
+                            label: Text(_comparing ? 'Comparing...' : 'Find similar'),
                           ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: _ImageSlot(
-                              bytes: _image2,
-                              label: 'Image 2',
-                              onTap: () => _pickImage(false),
+                          if (_compareError != null) ...[
+                            const SizedBox(height: 12),
+                            Text(
+                              _compareError!,
+                              style: TextStyle(color: Theme.of(context).colorScheme.error),
                             ),
-                          ),
+                          ],
+                          if (_similarResult != null) ...[
+                            const SizedBox(height: 24),
+                            _SimilarResultView(result: _similarResult!, imageCount: _images.length),
+                          ],
                         ],
                       ),
-                      const SizedBox(height: 24),
-                      FilledButton.icon(
-                        onPressed: _comparing ? null : _compare,
-                        icon: _comparing
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Icon(Icons.compare),
-                        label: Text(_comparing ? 'Comparing...' : 'Compare'),
-                      ),
-                      if (_compareError != null) ...[
-                        const SizedBox(height: 12),
-                        Text(
-                          _compareError!,
-                          style: TextStyle(color: Theme.of(context).colorScheme.error),
-                        ),
-                      ],
-                      if (_similarityScore != null) ...[
-                        const SizedBox(height: 24),
-                        Card(
-                          child: Padding(
-                            padding: const EdgeInsets.all(20),
-                            child: Column(
-                              children: [
-                                Text(
-                                  'Similarity',
-                                  style: Theme.of(context).textTheme.titleMedium,
-                                ),
-                                const SizedBox(height: 8),
-                                Text(
-                                  '${(_similarityScore! * 100).toStringAsFixed(1)}%',
-                                  style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                                        color: Theme.of(context).colorScheme.primary,
-                                      ),
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  _similarityScore! >= 0.7
-                                      ? 'Similar'
-                                      : _similarityScore! >= 0.4
-                                          ? 'Somewhat similar'
-                                          : 'Different',
-                                  style: Theme.of(context).textTheme.bodyMedium,
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
+                    ),
                     if (_comparing)
                       Positioned.fill(
                         child: Container(
@@ -264,56 +255,157 @@ class _ImageSimilarityPageState extends State<ImageSimilarityPage> {
   }
 }
 
+class _SimilarResultView extends StatelessWidget {
+  const _SimilarResultView({required this.result, required this.imageCount});
+
+  final SimilarImagesResult result;
+  final int imageCount;
+
+  @override
+  Widget build(BuildContext context) {
+    if (result.pairs.isEmpty) {
+      return Card(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Text(
+            'No similar images found among the $imageCount image(s) (threshold 95%). Try adding more images.',
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+        ),
+      );
+    }
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Similar images',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 12),
+            ...result.pairs.map((p) => Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Row(
+                    children: [
+                      Icon(Icons.check_circle, size: 20, color: Theme.of(context).colorScheme.primary),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Image ${p.indexA + 1} & Image ${p.indexB + 1}: ${(p.score * 100).toStringAsFixed(0)}% similar',
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                    ],
+                  ),
+                )),
+            if (result.groups.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Text(
+                'Groups (similar to each other)',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+              const SizedBox(height: 8),
+              ...result.groups.asMap().entries.map((e) {
+                final group = e.value;
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Text(
+                    'Group ${e.key + 1}: ${group.map((i) => 'Image ${i + 1}').join(', ')}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                );
+              }),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _ImageSlot extends StatelessWidget {
   const _ImageSlot({
     required this.bytes,
     required this.label,
     required this.onTap,
+    required this.showRemove,
+    this.onRemove,
   });
 
   final Uint8List? bytes;
   final String label;
   final VoidCallback onTap;
+  final bool showRemove;
+  final VoidCallback? onRemove;
 
   @override
   Widget build(BuildContext context) {
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(12),
-      child: Container(
-        height: 160,
-        decoration: BoxDecoration(
-          border: Border.all(color: Theme.of(context).colorScheme.outline),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(12),
-          child: bytes == null
-              ? Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.add_photo_alternate, size: 48, color: Theme.of(context).colorScheme.onSurfaceVariant),
-                    const SizedBox(height: 8),
-                    Text(label, style: Theme.of(context).textTheme.bodyMedium),
-                  ],
-                )
-              : Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    Image.memory(bytes!, fit: BoxFit.cover),
-                    Positioned(
-                      left: 0,
-                      right: 0,
-                      bottom: 0,
-                      child: Container(
-                        padding: const EdgeInsets.all(6),
-                        color: Colors.black54,
-                        child: Text(label, style: const TextStyle(color: Colors.white, fontSize: 12)),
-                      ),
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Container(
+            height: double.infinity,
+            decoration: BoxDecoration(
+              border: Border.all(color: Theme.of(context).colorScheme.outline),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: bytes == null
+                  ? Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.add_photo_alternate,
+                          size: 40,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                        const SizedBox(height: 4),
+                        Text(label, style: Theme.of(context).textTheme.bodyMedium),
+                      ],
+                    )
+                  : Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        Image.memory(bytes!, fit: BoxFit.cover),
+                        Positioned(
+                          left: 0,
+                          right: 0,
+                          bottom: 0,
+                          child: Container(
+                            padding: const EdgeInsets.all(6),
+                            color: Colors.black54,
+                            child: Text(
+                              label,
+                              style: const TextStyle(color: Colors.white, fontSize: 12),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
+            ),
+          ),
+          if (showRemove && bytes != null && onRemove != null)
+            Positioned(
+              top: -6,
+              right: -6,
+              child: Material(
+                color: Theme.of(context).colorScheme.errorContainer,
+                shape: const CircleBorder(),
+                child: InkWell(
+                  onTap: onRemove,
+                  customBorder: const CircleBorder(),
+                  child: const Padding(
+                    padding: EdgeInsets.all(6),
+                    child: Icon(Icons.close, size: 18),
+                  ),
                 ),
-        ),
+              ),
+            ),
+        ],
       ),
     );
   }
