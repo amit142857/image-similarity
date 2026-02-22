@@ -113,6 +113,7 @@ class _ImageSimilarityPageState extends State<ImageSimilarityPage> {
       final result = await Future(
         () => _similarityService.findSimilarImages(_images, threshold: 0.95),
       );
+      await Future.delayed(const Duration(seconds: 15));
       if (mounted) {
         setState(() {
           _comparing = false;
